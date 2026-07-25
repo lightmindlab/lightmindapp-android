@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 灯泡外圈 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28
+            C40,28 30,38 30,52
+            C30,61 35,68 41,72
+            L41,80
+            C41,82 43,84 45,84
+            L63,84
+            C65,84 67,82 67,80
+            L67,72
+            C73,68 78,61 78,52
+            C78,38 68,28 54,28 Z" />
+    <!-- 灯泡底座 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,88 L60,88 L60,92 L48,92 Z" />
+    <!-- 灯泡内部"心形"装饰（简化的脑/心智意象） -->
+    <path
+        android:fillColor="#1A73E8"
+        android:pathData="M54,42
+            C50,42 47,45 47,49
+            C47,52 49,54 52,55
+            L52,60
+            C52,61 53,62 54,62
+            C55,62 56,61 56,60
+            L56,55
+            C59,54 61,52 61,49
+            C61,45 58,42 54,42 Z" />
+</vector>
