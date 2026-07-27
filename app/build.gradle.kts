@@ -1,18 +1,19 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.compose")
 }
 
 android {
     namespace = "com.lightmind.webviewapp"
-    compileSdk = 34
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.lightmind.webviewapp"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 36
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {
@@ -26,15 +27,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.activity:activity-ktx:1.9.2")
+    implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.webkit:webkit:1.11.0")
+    implementation("io.github.kyant0:backdrop:2.0.0")
+
+    // Compose Multiplatform 依赖（由 CMP 插件解析到对应的 AndroidX Compose 制品）
+    implementation(compose.foundation)
+    implementation(compose.material3)
+    debugImplementation(compose.uiTooling)
 }
