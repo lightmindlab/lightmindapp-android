@@ -1,20 +1,16 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_custom_tabs/flutter_custom_tabs.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
-/// LightMind 启动器：使用 Chrome Custom Tabs 打开 www.lightmind.top。
+/// LightMind：在应用内通过 webview_flutter 显示 www.lightmind.top。
 ///
-/// 采用系统浏览器（Custom Tabs）渲染网页，而非 WebView。
-/// 系统浏览器原生遵循 prefers-color-scheme，深色模式下网页会自动切换深色主题。
+/// 深色模式方案（可靠，绕开厂商 ROM 上不可靠的 ForceDark）：
+/// 不依赖 WebView 的 setForceDark，而是在每次页面加载完成时注入一段 CSS，
+/// 直接改写 :root 的 color-scheme 与 prefers-color-scheme 查询，
+/// 让网页“以为”自己处于深色环境，从而触发网页自身定义的深色样式。
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // 透明状态栏，让启动界面背景延伸到系统栏，颜色跟随系统深色模式
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      systemNavigationBarColor: Colors.transparent,
-    ),
-  );
   runApp(const LightMindApp());
 }
 
@@ -36,110 +32,139 @@ class LightMindApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: Colors.black,
       ),
-      // 跟随系统深色模式
       themeMode: ThemeMode.system,
-      home: const LauncherPage(),
+      home: const WebViewPage(),
     );
   }
 }
 
-class LauncherPage extends StatefulWidget {
-  const LauncherPage({super.key});
+class WebViewPage extends StatefulWidget {
+  const WebViewPage({super.key});
 
   @override
-  State<LauncherPage> createState() => _LauncherPageState();
+  State<WebViewPage> createState() => _WebViewPageState();
 }
 
-class _LauncherPageState extends State<LauncherPage> {
-  static final Uri _homeUrl = Uri.parse('https://www.lightmind.top');
+class _WebViewPageState extends State<WebViewPage> {
+  static const Uri _homeUrl = Uri.parse('https://www.lightmind.top');
 
-  bool _launching = true;
-  String? _error;
+  late final WebViewController _controller;
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    // 界面首帧绘制后立即打开页面
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openPage());
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.transparent)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onProgress: (p) {
+            if (p > 0 && _loading) {
+              setState(() => _loading = true);
+            }
+          },
+          onPageStarted: (_) {
+            if (!_loading) setState(() => _loading = true);
+          },
+          onPageFinished: (_) {
+            _applyTheme();
+            if (_loading) setState(() => _loading = false);
+          },
+          onWebResourceError: (e) {
+            if (_loading) setState(() => _loading = false);
+          },
+        ),
+      )
+      ..loadRequest(_homeUrl);
   }
 
-  Future<void> _openPage() async {
-    setState(() {
-      _launching = true;
-      _error = null;
-    });
-    try {
-      // colorScheme: system —— Custom Tab 工具栏与网页渲染均跟随系统深色模式，
-      // 网页的 prefers-color-scheme 由系统浏览器原生支持，深色模式自动生效。
-      await launchUrl(
-        _homeUrl,
-        prefersDeepLink: false,
-        customTabsOptions: const CustomTabsOptions(
-          colorSchemes: CustomTabsColorSchemes(
-            colorScheme: CustomTabsColorScheme.system,
-          ),
-          urlBarHidingEnabled: false,
-          showTitle: true,
-          instantAppsEnabled: false,
-        ),
-      );
-    } on PlatformException {
-      _error = '未找到可用的浏览器';
-    } catch (_) {
-      _error = '打开页面失败';
-    } finally {
-      if (mounted) {
-        setState(() => _launching = false);
+  /// 注入 CSS 改写网页的深色模式判定，使其跟随系统深色模式。
+  ///
+  /// 原理：网页判断深色通常用 `@media (prefers-color-scheme: dark)` 或
+  /// `:root { color-scheme: ... }`。由于 WebView 不像系统浏览器那样可靠地
+  /// 传递 prefers-color-scheme，这里在运行时注入一段样式，强制覆盖这两项，
+  /// 让网页自身的深色样式生效。浅色模式则恢复 light。
+  Future<void> _applyTheme() async {
+    final isDark = WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+        Brightness.dark;
+    final scheme = isDark ? 'dark' : 'light';
+    final css = '''
+      :root {
+        color-scheme: $scheme !important;
       }
+    ''';
+    final js = '''
+      (function() {
+        var id = 'lm-theme-override';
+        var old = document.getElementById(id);
+        if (old) { old.remove(); }
+        var s = document.createElement('style');
+        s.id = id;
+        s.textContent = ${_jsString(css)};
+        document.head.appendChild(s);
+        document.documentElement.setAttribute('data-theme', '$scheme');
+        document.documentElement.style.colorScheme = '$scheme';
+      })();
+    ''';
+    try {
+      await _controller.runJavaScript(js);
+    } catch (_) {}
+  }
+
+  /// 将字符串转为安全的 JS 字符串字面量（含引号）
+  String _jsString(String s) {
+    final escaped = s
+        .replaceAll('\\', '\\\\')
+        .replaceAll("'", "\\'")
+        .replaceAll('\n', '\\n');
+    return "'$escaped'";
+  }
+
+  Future<bool> _onWillPop() async {
+    if (await _controller.canGoBack()) {
+      await _controller.goBack();
+      return false;
     }
+    return true;
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Scaffold(
-      body: Container(
-        color: isDark ? Colors.black : Colors.white,
-        alignment: Alignment.center,
-        child: _launching
-            ? Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.5,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        isDark ? Colors.white70 : Colors.black54,
-                      ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final shouldPop = await _onWillPop();
+        if (shouldPop && context.mounted) {
+          SystemNavigator.pop();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: isDark ? Colors.black : Colors.white,
+        body: SafeArea(
+          top: false,
+          bottom: false,
+          child: Stack(
+            children: [
+              WebViewWidget(controller: _controller),
+              if (_loading)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: LinearProgressIndicator(
+                    backgroundColor: Colors.transparent,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      isDark ? Colors.white70 : Colors.black45,
                     ),
+                    minHeight: 2,
                   ),
-                  const SizedBox(height: 16),
-                  Text(
-                    '正在打开 LightMind…',
-                    style: TextStyle(
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    ),
-                  ),
-                ],
-              )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _error ?? '已关闭',
-                    style: TextStyle(
-                      color: isDark ? Colors.white70 : Colors.black54,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: _openPage,
-                    child: const Text('重新打开'),
-                  ),
-                ],
-              ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
