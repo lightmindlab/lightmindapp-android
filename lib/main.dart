@@ -4,10 +4,15 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 /// LightMind：在应用内通过 webview_flutter 显示 www.lightmind.top。
 ///
-/// 深色模式方案（可靠，绕开厂商 ROM 上不可靠的 ForceDark）：
-/// 不依赖 WebView 的 setForceDark，而是在每次页面加载完成时注入一段 CSS，
-/// 直接改写 :root 的 color-scheme 与 prefers-color-scheme 查询，
-/// 让网页“以为”自己处于深色环境，从而触发网页自身定义的深色样式。
+/// 设计要点：
+/// - 预留系统状态栏与底部手势导航条区域，不让网页全屏；
+///   预留区域使用网页 CSS 变量 `--surface-muted` 的背景色（运行时通过
+///   JS 通道回传，加载前用系统主题对应的默认色）。
+/// - 网页加载完成前，屏幕中央显示小鸡破壳动画图。
+/// - 不显示加载进度条。
+/// - 设置自定义 User-Agent，附带 `LightMindApp/<version>` 标识。
+/// - 深色模式跟随系统：通过注入 CSS 改写 :root 的 color-scheme，
+///   绕过厂商 ROM 上不可靠的 setForceDark。
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const LightMindApp());
@@ -45,11 +50,16 @@ class WebViewPage extends StatefulWidget {
 }
 
 class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
-  static final Uri _homeUrl = Uri.parse('https://www.lightmind.top');
+  static const String _homeUrlString = 'https://www.lightmind.top';
+  static const String _appVersion = '1.2.1';
 
-  late final WebViewController _controller;
+  /// 状态栏 / 底部手势栏预留区域的背景色。
+  /// 加载完成后由网页 `--surface-muted` 回传；加载前按系统主题给默认色。
+  Color? _surfaceColor;
   bool _loading = true;
   Brightness? _lastBrightness;
+
+  late final WebViewController _controller;
 
   @override
   void initState() {
@@ -57,9 +67,22 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _lastBrightness =
         WidgetsBinding.instance.platformDispatcher.platformBrightness;
+
+    final ua = _buildUserAgent();
+
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent(ua)
       ..setBackgroundColor(Colors.transparent)
+      ..addJavaScriptChannel(
+        'SurfaceColorChannel',
+        onMessageReceived: (JavaScriptMessage msg) {
+          final parsed = _parseColor(msg.message.trim());
+          if (parsed != null) {
+            setState(() => _surfaceColor = parsed);
+          }
+        },
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
@@ -69,23 +92,28 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             _applyTheme();
             if (_loading) setState(() => _loading = false);
           },
-          onWebResourceError: (e) {
+          onWebResourceError: (_) {
             if (_loading) setState(() => _loading = false);
           },
         ),
       )
-      ..loadRequest(_homeUrl);
+      ..loadRequest(Uri.parse(_homeUrlString));
   }
 
-  /// 注入 CSS 改写网页的深色模式判定，使其跟随系统深色模式。
-  ///
-  /// 原理：网页判断深色通常用 `@media (prefers-color-scheme: dark)` 或
-  /// `:root { color-scheme: ... }`。由于 WebView 不像系统浏览器那样可靠地
-  /// 传递 prefers-color-scheme，这里在运行时注入一段样式，强制覆盖这两项，
-  /// 让网页自身的深色样式生效。浅色模式则恢复 light。
+  /// 构造 User-Agent：在默认 Android WebView UA 后追加应用标识。
+  String _buildUserAgent() {
+    // 通用现代 Android WebView UA，末尾追加 LightMindApp 版本标识，
+    // 便于网页端识别本应用并做相应适配。
+    const base =
+        'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36';
+    return '$base LightMindApp/$_appVersion';
+  }
+
+  /// 注入 CSS 改写网页的深色模式判定，并回传 `--surface-muted` 颜色。
   Future<void> _applyTheme() async {
-    final isDark = WidgetsBinding.instance.platformDispatcher.platformBrightness ==
-        Brightness.dark;
+    final isDark =
+        WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+            Brightness.dark;
     final scheme = isDark ? 'dark' : 'light';
     final css = '''
       :root {
@@ -94,15 +122,21 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     ''';
     final js = '''
       (function() {
-        var id = 'lm-theme-override';
-        var old = document.getElementById(id);
-        if (old) { old.remove(); }
-        var s = document.createElement('style');
-        s.id = id;
-        s.textContent = ${_jsString(css)};
-        document.head.appendChild(s);
-        document.documentElement.setAttribute('data-theme', '$scheme');
-        document.documentElement.style.colorScheme = '$scheme';
+        try {
+          var id = 'lm-theme-override';
+          var old = document.getElementById(id);
+          if (old) { old.remove(); }
+          var s = document.createElement('style');
+          s.id = id;
+          s.textContent = ${_jsString(css)};
+          document.head.appendChild(s);
+          document.documentElement.setAttribute('data-theme', '$scheme');
+          document.documentElement.style.colorScheme = '$scheme';
+
+          var sm = getComputedStyle(document.documentElement)
+                      .getPropertyValue('--surface-muted').trim();
+          if (sm) { window.SurfaceColorChannel.postMessage(sm); }
+        } catch (e) {}
       })();
     ''';
     try {
@@ -110,13 +144,46 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  /// 将字符串转为安全的 JS 字符串字面量（含引号）
+  /// 将字符串转为安全的 JS 字符串字面量（含引号）。
   String _jsString(String s) {
     final escaped = s
         .replaceAll('\\', '\\\\')
         .replaceAll("'", "\\'")
         .replaceAll('\n', '\\n');
     return "'$escaped'";
+  }
+
+  /// 解析网页回传的颜色字符串（支持 #rgb / #rrggbb / #rrggbbaa / rgb() / rgba()）。
+  Color? _parseColor(String raw) {
+    if (raw.isEmpty) return null;
+    final s = raw.trim().toLowerCase();
+    if (s.startsWith('#')) {
+      var hex = s.substring(1);
+      if (hex.length == 3) {
+        hex = hex.split('').map((c) => c + c).join();
+      } else if (hex.length == 4) {
+        hex = hex.split('').map((c) => c + c).join();
+      }
+      if (hex.length == 6) {
+        final v = int.tryParse(hex, radix: 16);
+        if (v != null) return Color(0xFF000000 | v);
+      } else if (hex.length == 8) {
+        final v = int.tryParse(hex, radix: 16);
+        if (v != null) return Color(v);
+      }
+      return null;
+    }
+    final m = RegExp(r'rgba?\(([^)]+)\)').firstMatch(s);
+    if (m != null) {
+      final parts = m.group(1)!.split(',').map((e) => e.trim()).toList();
+      final r = int.tryParse(parts[0]);
+      final g = parts.length > 1 ? int.tryParse(parts[1]) : null;
+      final b = parts.length > 2 ? int.tryParse(parts[2]) : null;
+      if (r != null && g != null && b != null) {
+        return Color.fromARGB(255, r, g, b);
+      }
+    }
+    return null;
   }
 
   @override
@@ -144,43 +211,64 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     return true;
   }
 
+  /// 当前预留区域背景色：优先用网页回传的 surface-muted，否则按系统主题取默认。
+  Color _effectiveSurfaceColor(BuildContext context) {
+    if (_surfaceColor != null) return _surfaceColor!;
+    return Theme.of(context).brightness == Brightness.dark
+        ? Colors.black
+        : Colors.white;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        final shouldPop = await _onWillPop();
-        if (shouldPop && context.mounted) {
-          SystemNavigator.pop();
-        }
-      },
-      child: Scaffold(
-        backgroundColor: isDark ? Colors.black : Colors.white,
-        body: SafeArea(
-          top: false,
-          bottom: false,
-          child: Stack(
-            children: [
-              WebViewWidget(controller: _controller),
-              if (_loading)
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: LinearProgressIndicator(
-                    backgroundColor: Colors.transparent,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      isDark ? Colors.white70 : Colors.black45,
+    final surface = _effectiveSurfaceColor(context);
+    // 状态栏图标颜色与背景明暗对应
+    final overlay = _useLightOverlay(surface)
+        ? SystemUiOverlayStyle.light
+        : SystemUiOverlayStyle.dark;
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: overlay.copyWith(
+        statusBarColor: surface,
+        systemNavigationBarColor: surface,
+      ),
+      child: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (didPop) return;
+          final shouldPop = await _onWillPop();
+          if (shouldPop && context.mounted) {
+            SystemNavigator.pop();
+          }
+        },
+        child: Scaffold(
+          backgroundColor: surface,
+          body: SafeArea(
+            // 预留顶部状态栏与底部手势导航条区域
+            child: Stack(
+              children: [
+                WebViewWidget(controller: _controller),
+                if (_loading)
+                  Container(
+                    color: surface,
+                    alignment: Alignment.center,
+                    child: Image.asset(
+                      'assets/images/hatching_chick.png',
+                      width: 140,
+                      height: 140,
+                      fit: BoxFit.contain,
                     ),
-                    minHeight: 2,
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  /// 判断给定背景色是否偏暗，决定状态栏图标用亮色还是暗色。
+  bool _useLightOverlay(Color c) {
+    return c.computeLuminance() < 0.5;
   }
 }

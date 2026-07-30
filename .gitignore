@@ -51,3 +51,6 @@ app.*.map.json
 
 # 构建产物（APK 等）
 /release/
+
+# 用户提供的源图片（已处理为图标/资源，不入库）
+/hatching_chick_animated.png
