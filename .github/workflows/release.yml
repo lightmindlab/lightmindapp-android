@@ -1,0 +1,114 @@
+name: Release APK
+
+# 手动触发：构建 release APK 并创建 GitHub Release（带 APK 产物）
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release 标签 (如 v2.2)'
+        required: true
+        default: 'v2.2'
+      name:
+        description: 'Release 标题'
+        required: true
+        default: 'v2.2 - 网页性能优化与 CI 构建'
+      prerelease:
+        description: '是否为预发布'
+        required: false
+        default: 'false'
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # gh release create 需要写权限
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      # 复用同一份签名密钥，保持各版本签名一致
+      - name: Cache release keystore
+        id: cache-ks
+        uses: actions/cache@v4
+        with:
+          path: android/app/lightmind.jks
+          key: lightmind-release-keystore-v1
+
+      - name: Generate release keystore
+        if: steps.cache-ks.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkeypair -v \
+            -keystore android/app/lightmind.jks \
+            -alias lightmind \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass lightmind -keypass lightmind \
+            -dname "CN=LightMind, OU=App, O=lightmindlab, L=Shanghai, S=Shanghai, C=CN"
+
+      - name: Write key.properties
+        run: |
+          cat > android/key.properties <<'EOF'
+          storePassword=lightmind
+          keyPassword=lightmind
+          keyAlias=lightmind
+          storeFile=lightmind.jks
+          EOF
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Rename APK to release asset name
+        id: apk
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          # 去掉前导 v，得到纯版本号，命名与历史 release 一致：lightmind-vX.Y.apk
+          ver="${tag#v}"
+          asset="lightmind-v${ver}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "$asset"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          ls -la "$asset"
+
+      - name: Create GitHub Release and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          ## 主要变更
+
+          ### 性能优化（网页渲染与滚动流畅度）
+          - 注入性能 CSS：去除点击高亮、约束过度滚动（`overscroll-behavior: contain`）、加速文本绘制（`text-rendering: optimizeSpeed`）
+          - 为 WebView 与加载遮罩添加 `RepaintBoundary`，隔离绘制层，避免上层变化引起整树重绘
+          - 加载遮罩改为 `AnimatedOpacity` 淡出过渡，淡出后放行触摸事件
+          - surface 颜色未变化时跳过 `setState`，减少冗余重建
+
+          ### CI 构建
+          - 新增 GitHub Actions 自动构建 release APK 并上传产物
+          - 移除沙箱专属的 Maven 代理配置，保证 CI 可正常拉取依赖
+
+          ## 安装
+
+          下载下方 `lightmind-v2.2.apk` 安装即可。
+          EOF
+          gh release create "${{ github.event.inputs.tag }}" \
+            --title "${{ github.event.inputs.name }}" \
+            --notes-file /tmp/release-notes.md \
+            --prerelease=${{ github.event.inputs.prerelease }} \
+            --target main \
+            "${{ steps.apk.outputs.asset }}"
