@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -45,25 +44,24 @@ class WebViewPage extends StatefulWidget {
   State<WebViewPage> createState() => _WebViewPageState();
 }
 
-class _WebViewPageState extends State<WebViewPage> {
-  static const Uri _homeUrl = Uri.parse('https://www.lightmind.top');
+class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
+  static final Uri _homeUrl = Uri.parse('https://www.lightmind.top');
 
   late final WebViewController _controller;
   bool _loading = true;
+  Brightness? _lastBrightness;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _lastBrightness =
+        WidgetsBinding.instance.platformDispatcher.platformBrightness;
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.transparent)
       ..setNavigationDelegate(
         NavigationDelegate(
-          onProgress: (p) {
-            if (p > 0 && _loading) {
-              setState(() => _loading = true);
-            }
-          },
           onPageStarted: (_) {
             if (!_loading) setState(() => _loading = true);
           },
@@ -119,6 +117,23 @@ class _WebViewPageState extends State<WebViewPage> {
         .replaceAll("'", "\\'")
         .replaceAll('\n', '\\n');
     return "'$escaped'";
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    final current =
+        WidgetsBinding.instance.platformDispatcher.platformBrightness;
+    if (current != _lastBrightness) {
+      _lastBrightness = current;
+      _applyTheme();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   Future<bool> _onWillPop() async {
