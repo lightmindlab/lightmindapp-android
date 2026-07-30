@@ -1,0 +1,76 @@
+name: Build APK
+
+# 触发条件：推送/合并到 main、针对 main 的 PR、手动运行
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # AGP 9 / Gradle 9 需要 JDK 17+，使用 21（LTS）兼容 sourceCompatibility 17
+          java-version: '21'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter environment
+        run: flutter --version
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      # 复用同一份签名密钥，避免每次构建签名变更导致无法覆盖安装
+      - name: Cache release keystore
+        id: cache-ks
+        uses: actions/cache@v4
+        with:
+          path: android/app/lightmind.jks
+          key: lightmind-release-keystore-v1
+
+      - name: Generate release keystore
+        if: steps.cache-ks.outputs.cache-hit != 'true'
+        run: |
+          keytool -genkeypair -v \
+            -keystore android/app/lightmind.jks \
+            -alias lightmind \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass lightmind -keypass lightmind \
+            -dname "CN=LightMind, OU=App, O=lightmindlab, L=Shanghai, S=Shanghai, C=CN"
+
+      - name: Write key.properties
+        run: |
+          cat > android/key.properties <<'EOF'
+          storePassword=lightmind
+          keyPassword=lightmind
+          keyAlias=lightmind
+          storeFile=lightmind.jks
+          EOF
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightmind-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
