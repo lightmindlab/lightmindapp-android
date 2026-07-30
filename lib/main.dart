@@ -51,7 +51,7 @@ class WebViewPage extends StatefulWidget {
 
 class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
   static const String _homeUrlString = 'https://www.lightmind.top';
-  static const String _appVersion = '1.2.1';
+  static const String _appVersion = '2.2.0';
 
   /// 状态栏 / 底部手势栏预留区域的背景色。
   /// 加载完成后由网页 `--surface-muted` 回传；加载前按系统主题给默认色。
@@ -69,11 +69,16 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         WidgetsBinding.instance.platformDispatcher.platformBrightness;
 
     final ua = _buildUserAgent();
+    // WebView 背景设为不透明：透明背景会让合成器每帧做 alpha 混合，
+    // 是内嵌 WebView 动画不如浏览器流畅的主要原因。先按系统主题给默认色。
+    final initBg = _lastBrightness == Brightness.dark
+        ? Colors.black
+        : Colors.white;
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(ua)
-      ..setBackgroundColor(Colors.transparent)
+      ..setBackgroundColor(initBg)
       ..addJavaScriptChannel(
         'SurfaceColorChannel',
         onMessageReceived: (JavaScriptMessage msg) {
@@ -81,6 +86,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
           // 仅在颜色真正变化时刷新，避免重复 setState 触发 WebView 重绘
           if (parsed != null && parsed != _surfaceColor) {
             setState(() => _surfaceColor = parsed);
+            // 同步 WebView 背景为不透明色，保持合成器走快路径
+            _controller.setBackgroundColor(parsed.withValues(alpha: 1.0));
           }
         },
       )
