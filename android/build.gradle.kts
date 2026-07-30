@@ -1,10 +1,11 @@
 allprojects {
     repositories {
+        // 官方源优先，保证 CI 可靠性；阿里云镜像作为国内加速回退
+        google()
+        mavenCentral()
         maven("https://maven.aliyun.com/repository/public")
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
-        google()
-        mavenCentral()
     }
 }
 
