@@ -78,7 +78,8 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
         'SurfaceColorChannel',
         onMessageReceived: (JavaScriptMessage msg) {
           final parsed = _parseColor(msg.message.trim());
-          if (parsed != null) {
+          // 仅在颜色真正变化时刷新，避免重复 setState 触发 WebView 重绘
+          if (parsed != null && parsed != _surfaceColor) {
             setState(() => _surfaceColor = parsed);
           }
         },
@@ -118,6 +119,19 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
     final css = '''
       :root {
         color-scheme: $scheme !important;
+      }
+      /* 渲染与滚动性能优化：去掉点击高亮、约束过度滚动、加速文本绘制 */
+      html {
+        -webkit-tap-highlight-color: transparent;
+        -webkit-text-size-adjust: 100%;
+      }
+      html, body {
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        text-rendering: optimizeSpeed;
+      }
+      * {
+        -webkit-tap-highlight-color: transparent;
       }
     ''';
     final js = '''
@@ -247,18 +261,31 @@ class _WebViewPageState extends State<WebViewPage> with WidgetsBindingObserver {
             // 预留顶部状态栏与底部手势导航条区域
             child: Stack(
               children: [
-                WebViewWidget(controller: _controller),
-                if (_loading)
-                  Container(
-                    color: surface,
-                    alignment: Alignment.center,
-                    child: Image.asset(
-                      'assets/images/hatching_chick.png',
-                      width: 140,
-                      height: 140,
-                      fit: BoxFit.contain,
+                // 隔离 WebView 的绘制层，避免上层遮罩/主题变化引起整树重绘
+                RepaintBoundary(
+                  child: WebViewWidget(controller: _controller),
+                ),
+                // 加载遮罩：淡出过渡，淡出后忽略命中以放行触摸事件
+                IgnorePointer(
+                  ignoring: !_loading,
+                  child: RepaintBoundary(
+                    child: AnimatedOpacity(
+                      opacity: _loading ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeOut,
+                      child: Container(
+                        color: surface,
+                        alignment: Alignment.center,
+                        child: Image.asset(
+                          'assets/images/hatching_chick.png',
+                          width: 140,
+                          height: 140,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
                     ),
                   ),
+                ),
               ],
             ),
           ),
